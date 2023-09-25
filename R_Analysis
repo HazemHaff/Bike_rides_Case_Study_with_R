@@ -1,0 +1,598 @@
+install.packages("tidyverse")
+install.packages("data.table")
+install.packages("ggplot2")
+install.packages("lubridate")
+install.packages("stringr")
+install.packages("rmarkdown")
+library(tidyverse)
+library(dplyr)
+library(data.table)
+library(ggplot2)
+library(lubridate)
+library(stringr)
+library(corrplot)
+library(knitr)
+library(scales)
+Print("Now after we cleaned our data, lets proceed with Uploading it, then run some checks and further validates its integrity")
+
+#----------------------------------------------------------------------------------------------------
+
+#Loading our Data
+rides <- read.csv("C:/Users/hhaff/Desktop/Cyclsit trip/Final trips table.csv")
+sum(is.na(rides))
+summary(rides)
+summarydata_df <- as.data.frame(summary(rides))
+head(rides)
+headdata <- as.data.frame(head(rides))
+
+print("interestingly the average duration is high, this possibly suggest that there may be outliars, an extremly long durations that is skwing the average")
+print("In this case, we have to check further, before we make any decision about how we will handle it")
+print("lets sort the trip_duration column descending")
+
+#----------------------------------------------------------------------------------------------------
+# Sort the rides data frame by trip_duration in descending order and view the top 5
+sorted_rides <- rides %>% arrange(desc(trip_duration))
+head(sorted_rides, 10)
+
+# Summarize rides by user type including median duration
+user_duration_summary <- rides %>%
+  group_by(user_type) %>%
+  summarise(
+    total_rides = n(),
+    min_duration = min(trip_duration, na.rm = TRUE),
+    max_duration = max(trip_duration, na.rm = TRUE),
+    median_duration = median(trip_duration, na.rm = TRUE),
+    mean_duration = mean(trip_duration, na.rm = TRUE),
+    stddev_duration = sd(trip_duration, na.rm = TRUE)
+  )
+kable(user_duration_summary)
+
+print("it may be tempting to delete the outliars, however, it appears that there may be a trend for each user type")
+print("in this case, I have an idea of bucketing or segmenting the duration in intervals, and count how many rides fall in that interval,
+      then group them by user type")
+
+print("I'll begin by creating duration categories, breaking the trip duration to segments")
+
+# Convert and extract the hour from the start_time
+rides$start_time <- as.POSIXct(rides$start_time, format="%H:%M:%S")
+rides$hour_of_day <- format(rides$start_time, "%H")
+View(rides)
+
+# Create duration categories
+rides$duration_category <- cut(
+  rides$trip_duration,
+  breaks = c(0, 60, 300, 1800, 3600, 7200, 21600, 43200, 86400, 604800, 2592000, Inf),
+  labels = c("0-1 min", "1-5 min", "5-30 min", "30 min - 1 hr", "1-2 hrs", "2-6 hrs", "6-12 hrs", "12-24 hrs", "1-7 days", "7-30 days", "> 30 days"),
+  right = FALSE
+)
+
+# Summarize the number of rides by duration category and user type
+ride_duration_counts <- rides %>%
+  group_by(duration_category, user_type) %>%
+  summarise(num_rides = n())
+kable(ride_duration_counts, n = Inf)
+
+# Visualizing the number of rides by duration category and user type
+ggplot(ride_duration_counts, aes(x = duration_category, y = num_rides, fill = user_type)) +
+  geom_bar(stat = "identity", position = "dodge") +
+  labs(title = "Number of Rides by Duration Category and User Type",
+       x = "Duration Category",
+       y = "Number of Rides") +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+# Summarize rides by duration category and user type with additional statistics
+ride_duration_stats <- rides %>%
+  group_by(duration_category, user_type) %>%
+  summarise(
+    num_rides = n(),
+    min_duration = min(trip_duration, na.rm = TRUE),
+    max_duration = max(trip_duration, na.rm = TRUE),
+    mean_duration = mean(trip_duration, na.rm = TRUE),
+    median_duration = median(trip_duration, na.rm = TRUE)
+  )
+kable(ride_duration_stats, n = Inf)
+
+# Reshape the data for plotting
+ride_duration_stats_melted <- gather(ride_duration_stats, key = "Statistic", value = "Value", -duration_category, -user_type, -num_rides)
+
+# Plotting the statistics
+ggplot(ride_duration_stats_melted, aes(x = duration_category, y = Value, color = Statistic, group = interaction(Statistic, duration_category))) +
+  geom_point(aes(linetype = Statistic), linewidth = 1) +  # Changed size to linewidth
+  facet_wrap(~ user_type) +
+  labs(title = "Ride Duration Statistics by Duration Category and User Type",
+       x = "Duration Category",
+       y = "Duration (seconds)") +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+print("As we can see, after segmenting the number of rides by duration, we can see that")
+
+print("As it appears, that there is significant difference in user type behavior, reguarding the duration of the trip,
+      and furthere almost casual users tend to have trips that lasts over 30days nearly 5 times higher than member users
+      we can speculate that this due to one time use and forgetting to propperly return the bikes, we need to investigate more")
+
+print("Judging by the intial EDA, and Descriptive Analysis, we can start to notice the behavior of both user types,
+      Casual memebers tend to have fewer rides(as expected), but longer duration,
+      contrast to Member users, who tend to have more frequent rides, in shorter time,")
+
+print("The question now is this,  casual memebers tend to have more lesiure rides more than memeber?, we need to analyse, the difference user behaviro,
+      based on weekends weekdays, hourly, daily, seasonal, and on holidays, also lets analyse the rate of return to the same station")
+
+#New column indicating if the ride returned to the same station
+rides$return_same_station <- ifelse(rides$start_station_id == rides$end_station_id, "Yes", "No")
+
+#Overall number of same station return or no by User Type
+same_station_by_user <- rides %>%
+  group_by(user_type, return_same_station) %>%
+  summarise(total_rides = n())
+kable(same_station_by_user)
+
+#Plotting the Trend of returned to same station
+ggplot(same_station_by_user, aes(x = user_type, y = total_rides, fill = return_same_station)) +
+  geom_bar(stat = "identity", position = "dodge") +
+  labs(title = "Rides Returning to the Same Station by User Type",
+       x = "User Type",
+       y = "Total Rides") +
+  scale_y_continuous(labels = scales::comma)
+
+
+
+#-------------------------------------------------------- Rides By Hour of the Day ------------------------------
+
+# Summarize the overall peak usage time by hour of the day
+overall_peak_time <- rides %>%
+  group_by(hour_of_day) %>%
+  summarise(total_rides = n())
+kable(overall_peak_time)
+
+# Plotting the Overall Trend
+ggplot(overall_peak_time, aes(x = hour_of_day, y = total_rides)) +
+  geom_bar(stat = "identity") +
+  labs(title = "Overall Peak Usage Time",
+       x = "Hour of the Day",
+       y = "Total Rides") +
+scale_y_continuous(labels = scales::comma)
+
+# Trends by User Type for Peak Usage Time
+user_peak_time <- rides %>%
+  group_by(hour_of_day, user_type) %>%
+  summarise(total_rides = n()) %>%
+  arrange(hour_of_day, user_type)
+kable(user_peak_time)
+
+# Plotting the Trends by User Type
+ggplot(user_peak_time, aes(x = hour_of_day, y = total_rides, fill = user_type)) +
+  geom_bar(stat = "identity", position = "dodge") +
+  labs(title = "Peak Usage Time by User Type",
+       x = "Hour of the Day",
+       y = "Total Rides") +
+scale_y_continuous(labels = scales::comma)
+
+
+# Total Rides and Trip Duration Statistics by Hour of the Day
+rides_by_hour_and_stats <- rides %>%
+  group_by(user_type,hour_of_day) %>%
+  summarise(
+    total_rides = n(),
+    min_duration = min(trip_duration, na.rm = TRUE),
+    max_duration = max(trip_duration, na.rm = TRUE),
+    median_duration = median(trip_duration, na.rm = TRUE),
+    mean_duration = mean(trip_duration, na.rm = TRUE),
+    stddev_duration = sd(trip_duration, na.rm = TRUE)
+  )
+kable(rides_by_hour_and_stats)
+
+#Plotting Time based Analysis
+ggplot(rides_by_hour_and_stats, aes(x = hour_of_day, y = median_duration, fill = user_type)) +
+  geom_bar(stat = "identity", position = "dodge") +
+  labs(title = "Median Trip Duration by Hour of the Day",
+       x = "Hour of the Day",
+       y = "Median Trip Duration (seconds)")
+
+#Same station Time based Analysis
+same_station_by_hour <- rides %>%
+  group_by(user_type, hour_of_day, return_same_station) %>%
+  summarise(total_rides = n())
+kable(same_station_by_hour)
+
+#Plotting Same station Time based Analysis
+ggplot(same_station_by_hour, aes(x = hour_of_day, y = total_rides, fill = return_same_station)) +
+  geom_bar(stat = "identity", position = "dodge") +
+  facet_wrap(~ user_type) +
+  labs(title = "Rides Returning to the Same Station by Hour and User Type",
+       x = "Hour of Day",
+       y = "Total Rides") +
+  scale_fill_manual(values = c("Yes" = "#1a9d49", "No" = "#ff6b6b")) +
+  scale_y_continuous(labels = scales::comma)
+
+
+
+#------------------------------------------------------------------------ Analysis By season -----------------------------
+# Summarize total rides by season
+rides_by_season <- rides %>%
+  group_by(season) %>%
+  summarise(total_rides = n())
+kable(rides_by_season)
+
+# Trends by User Type for Seasonal Usage
+user_seasonal <- rides %>%
+  group_by(user_type, season) %>%
+  summarise(total_rides = n())
+kable(user_seasonal)
+
+# Plotting the Trends by User Type
+ggplot(user_seasonal, aes(x = season, y = total_rides, fill = user_type)) +
+  geom_bar(stat = "identity", position = "dodge") +
+  labs(title = "Seasonal Usage by User Type",
+       x = "Season",
+       y = "Total Rides") +
+  scale_y_continuous(labels = scales::comma)
+
+
+# Total Rides and Trip Duration Statistics by Season
+rides_by_season_and_stats <- rides %>%
+  group_by(user_type,season) %>%
+  summarise(
+    total_rides = n(),
+    min_duration = min(trip_duration, na.rm = TRUE),
+    max_duration = max(trip_duration, na.rm = TRUE),
+    median_duration = median(trip_duration, na.rm = TRUE),
+    mean_duration = mean(trip_duration, na.rm = TRUE),
+    stddev_duration = sd(trip_duration, na.rm = TRUE)
+  )
+kable(rides_by_season_and_stats)
+
+#Plotting Trip Duration by Season
+ggplot(rides_by_season_and_stats, aes(x = season, y = median_duration, fill = user_type)) +
+  geom_bar(stat = "identity", position = "dodge") +
+  labs(title = "Median Trip Duration by Season",
+       x = "Season",
+       y = "Median Trip Duration (seconds)")
+
+#Same station Seasonal Analysis
+same_station_by_season <- rides %>%
+  group_by(user_type, season, return_same_station) %>%
+  summarise(total_rides = n())
+kable(same_station_by_season)
+
+#Plotting Same station Seasonal
+ggplot(same_station_by_season, aes(x = season, y = total_rides, fill = return_same_station)) +
+  geom_bar(stat = "identity", position = "dodge") +
+  facet_wrap(~ user_type) +
+  labs(title = "Rides Returning to the Same Station by Season and User Type",
+       x = "Season",
+       y = "Total Rides") +
+  scale_y_continuous(labels = scales::comma)
+  theme_minimal()
+
+
+#------------------------------------------------------------------ Weekend Weekday Analysis--------------------------------
+# Overall Trend for Weekday vs Weekend Usage
+overall_weekday_weekend <- rides %>%
+  group_by(weekend_or) %>%
+  summarise(total_rides = n())
+kable(overall_weekday_weekend)
+
+# Plotting the Overall Trend for Weekday vs Weekend Usage
+ggplot(overall_weekday_weekend, aes(x = weekend_or, y = total_rides)) +
+  geom_bar(stat = "identity") +
+  labs(title = "Overall Weekday vs Weekend Usage",
+       x = "Day Type",
+       y = "Total Rides") +
+  scale_y_continuous(labels = scales::comma)
+
+# Trends by User Type for Weekday vs Weekend Usage
+user_weekday_weekend <- rides %>%
+  group_by(user_type, weekend_or) %>%
+  summarise(total_rides = n())
+kable(user_weekday_weekend)
+
+# Plotting the Trends by User Type for Weekday vs Weekend Usage
+ggplot(user_weekday_weekend, aes(x = weekend_or, y = total_rides, fill = user_type)) +
+  geom_bar(stat = "identity", position = "dodge") +
+  labs(title = "Weekday vs Weekend Usage by User Type",
+       x = "Day Type",
+       y = "Total Rides")
+
+#Same station Weekend Weekday Analysis
+same_station_by_weekday <- rides %>%
+  group_by(user_type, weekend_or, return_same_station) %>%
+  summarise(total_rides = n())
+kable(same_station_by_weekday)
+
+#plotting same station weekend weekday analysis
+ggplot(same_station_by_weekday, aes(x = weekend_or, y = total_rides, fill = return_same_station)) +
+  geom_bar(stat = "identity", position = "dodge") +
+  facet_wrap(~ user_type) +
+  labs(title = "Rides Returning to the Same Station by Weekday and User Type",
+       x = "Weekday or Weekend",
+       y = "Total Rides")
+
+
+#----------------------------------------------------------------- Analysis By weekday---------------------------
+# Summarize total rides by user type and weekday
+rides_by_weekday <- rides %>%
+  group_by(user_type, weekday_name) %>%
+  summarise(total_rides = n()) %>%
+  arrange(desc(total_rides))
+kable(rides_by_weekday)
+
+
+# Total Rides and Trip Duration Statistics by Weekday and User Type
+rides_by_weekday_and_stats <- rides %>%
+  group_by(user_type, weekday_name) %>%
+  summarise(
+    total_rides = n(),
+    min_duration = min(trip_duration, na.rm = TRUE),
+    max_duration = max(trip_duration, na.rm = TRUE),
+    median_duration = median(trip_duration, na.rm = TRUE),
+    mean_duration = mean(trip_duration, na.rm = TRUE),
+    stddev_duration = sd(trip_duration, na.rm = TRUE)
+  )
+kable(rides_by_weekday_and_stats)
+
+#Plotting Trip Duration by Weekday and User Type
+ggplot(rides_by_weekday_and_stats, aes(x = weekday_name, y = median_duration, fill = user_type)) +
+  geom_bar(stat = "identity", position = "dodge") +
+  labs(title = "Median Trip Duration by Weekday and User Type",
+       x = "Weekday",
+       y = "Median Trip Duration (seconds)")
+
+#Heatmap for Hour of Day vs. Weekday
+rides_summary <- rides %>%
+  group_by(weekday_name, hour_of_day) %>%
+  summarise(total_rides = n())
+kable(rides_summary)
+
+ggplot(rides_summary, aes(x = weekday_name, y = hour_of_day, fill = total_rides)) +
+  geom_tile() +
+  scale_fill_gradient(low = "white", high = "steelblue") +
+  labs(title = "Heatmap of Rides by Hour and Weekday",
+       x = "Weekday",
+       y = "Hour of Day")
+
+
+#---------------------------------------------------------Rides by Holiday---------------------------------------------------
+
+# Total Rides and Trip Duration Statistics by Holiday Status
+rides_by_holiday_and_stats <- rides %>%
+  group_by(user_type,holiday_or) %>%
+  summarise(
+    total_rides = n(),
+    min_duration = min(trip_duration, na.rm = TRUE),
+    max_duration = max(trip_duration, na.rm = TRUE),
+    median_duration = median(trip_duration, na.rm = TRUE),
+    mean_duration = mean(trip_duration, na.rm = TRUE),
+    stddev_duration = sd(trip_duration, na.rm = TRUE)
+  )
+kable(rides_by_holiday_and_stats)
+
+# Plotting Holiday Analysis
+ggplot(rides_by_holiday_and_stats, aes(x = holiday_or, y = median_duration, fill = user_type)) +
+  geom_bar(stat = "identity", position = "dodge") +
+  labs(title = "Median Trip Duration by Holiday Status",
+       x = "Holiday Status",
+       y = "Median Trip Duration (seconds)") +
+  facet_wrap(~ user_type)
+
+# Overall Trend for Holiday Usage
+overall_holiday_usage <- rides %>%
+  group_by(holiday_or) %>%
+  summarise(total_rides = n())
+kable(overall_holiday_usage)
+
+# Plotting the Overall Trend for Holiday Usage
+ggplot(overall_holiday_usage, aes(x = holiday_or, y = total_rides)) +
+  geom_bar(stat = "identity") +
+  labs(title = "Overall Usage by Holiday Status",
+       x = "Holiday Status",
+       y = "Total Rides") +
+  scale_y_continuous(labels = scales::comma)
+
+# Trends by User Type for Holiday Usage
+user_holiday_usage <- rides %>%
+  group_by(user_type, holiday_or) %>%
+  summarise(total_rides = n())
+kable(user_holiday_usage)
+
+# Plotting the Trends by User Type for Holiday Usage
+ggplot(user_holiday_usage, aes(x = holiday_or, y = total_rides, fill = user_type)) +
+  geom_bar(stat = "identity", position = "dodge") +
+  labs(title = "Usage by User Type and Holiday Status",
+       x = "Holiday Status",
+       y = "Total Rides") +
+  scale_y_continuous(labels = scales::comma)
+
+#Same station Holiday Analysis
+same_station_by_holiday <- rides %>%
+  group_by(user_type, holiday_or, return_same_station) %>%
+  summarise(total_rides = n())
+kable(same_station_by_holiday)
+
+# Plotting the data
+ggplot(same_station_by_holiday, aes(x = holiday_or, y = total_rides, fill = return_same_station)) +
+  geom_bar(stat = "identity", position = "dodge") +
+  facet_wrap(~ user_type) +
+  labs(title = "Rides Returning to the Same Station by Holiday and User Type",
+       x = "Holiday Status",
+       y = "Total Rides") +
+  scale_y_continuous(labels = scales::comma)
+
+
+
+#----------------------------------------------- Conversion Rate-------------------------
+# Calculate the conversion rate by hour
+conversion_rate_by_hour <- rides %>%
+  group_by(hour_of_day) %>%
+  summarise(
+    total_rides = n(),
+    casual_rides = sum(user_type == 'casual'),
+    conversion_rate = (casual_rides / total_rides) * 100
+  ) %>%
+  arrange(hour_of_day)
+kable(conversion_rate_by_hour)
+
+# Plotting the conversion rate by day
+ggplot(conversion_rate_by_hour, aes(x = hour_of_day, y = conversion_rate)) +
+  geom_col(fill = "steelblue") +
+  geom_text(aes(label = round(conversion_rate, 2)), vjust = -0.5) +
+  labs(title = "Daily Conversion Rate",
+       x = "hour of day",
+       y = "Conversion Rate (%)") +
+  theme_minimal()
+
+#Conversion rate by duration
+conversion_rate_by_duration <- rides %>%
+  group_by(duration_category) %>%
+  summarise(
+    total_rides = n(),
+    casual_rides = sum(user_type == 'casual'),
+    conversion_rate = (casual_rides / total_rides) * 100
+  ) %>%
+  arrange(duration_category)
+kable(conversion_rate_by_duration)
+
+ggplot(conversion_rate_by_duration, aes(x = duration_category, y = conversion_rate)) +
+  geom_col(fill = "steelblue") +
+  geom_text(aes(label = round(conversion_rate, 2)), vjust = -0.5) +
+  labs(title = "Conversion Rate by Duration Category",
+       x = "Duration Category",
+       y = "Conversion Rate (%)") +
+  theme_minimal()
+
+#Conversion Rate by weekday
+conversion_rate_by_weekday <- rides %>%
+  group_by(weekday_name) %>%
+  summarise(
+    total_rides = n(),
+    casual_rides = sum(user_type == 'casual'),
+    conversion_rate = (casual_rides / total_rides) * 100
+  ) %>%
+  arrange(weekday_name)
+kable(conversion_rate_by_weekday)
+
+ggplot(conversion_rate_by_weekday, aes(x = reorder(weekday_name, conversion_rate), y = conversion_rate)) +
+  geom_col(fill = "steelblue") +
+  geom_text(aes(label = round(conversion_rate, 2)), vjust = -0.5) +
+  labs(title = "Conversion Rate by Weekday",
+       x = "Weekday",
+       y = "Conversion Rate (%)") +
+  theme_minimal()
+
+#conversion rate by season
+conversion_rate_by_season <- rides %>%
+  group_by(season) %>%
+  summarise(
+    total_rides = n(),
+    casual_rides = sum(user_type == 'casual'),
+    conversion_rate = (casual_rides / total_rides) * 100
+  ) %>%
+  arrange(season)
+kable(conversion_rate_by_season)
+
+ggplot(conversion_rate_by_season, aes(x = season, y = conversion_rate)) +
+  geom_col(fill = "steelblue") +
+  geom_text(aes(label = round(conversion_rate, 2)), vjust = -0.5) +
+  labs(title = "Conversion Rate by Season",
+       x = "Season",
+       y = "Conversion Rate (%)") +
+  theme_minimal()
+
+#Converstion Rate by weekend
+conversion_rate_by_day_type <- rides %>%
+  group_by(weekend_or) %>%
+  summarise(
+    total_rides = n(),
+    casual_rides = sum(user_type == 'casual'),
+    conversion_rate = (casual_rides / total_rides) * 100
+  ) %>%
+  arrange(weekend_or)
+kable(conversion_rate_by_day_type)
+
+ggplot(conversion_rate_by_day_type, aes(x = weekend_or, y = conversion_rate)) +
+  geom_col(fill = "steelblue") +
+  geom_text(aes(label = round(conversion_rate, 2)), vjust = -0.5) +
+  labs(title = "Conversion Rate by Day Type",
+       x = "Day Type",
+       y = "Conversion Rate (%)") +
+  theme_minimal()
+
+#Conversion Rate by Holiday
+conversion_rate_by_holiday <- rides %>%
+  group_by(holiday_or) %>%
+  summarise(
+    total_rides = n(),
+    casual_rides = sum(user_type == 'casual'),
+    conversion_rate = (casual_rides / total_rides) * 100
+  ) %>%
+  arrange(holiday_or)
+kable(conversion_rate_by_holiday)
+
+ggplot(conversion_rate_by_holiday, aes(x = holiday_or, y = conversion_rate)) +
+  geom_col(fill = "steelblue") +
+  geom_text(aes(label = round(conversion_rate, 2)), vjust = -0.5) +
+  labs(title = "Conversion Rate by Holiday Status",
+       x = "Holiday Status",
+       y = "Conversion Rate (%)") +
+  theme_minimal()
+
+
+#Exporting data frames to CSV files
+write.csv(rides, "rides.csv")
+write.csv(user_duration_summary, "user_duration_summary.csv")
+write.csv(ride_duration_counts, "ride_duration_counts.csv")
+write.csv(ride_duration_stats, "ride_duration_stats.csv")
+write.csv(same_station_by_user, "same_station_by_user.csv")
+write.csv(overall_peak_time, "overall_peak_time.csv")
+write.csv(rides_by_season, "rides_by_season.csv")
+write.csv(overall_weekday_weekend, "overall_weekday_weekend.csv")
+write.csv(rides_by_weekday, "rides_by_weekday.csv")
+write.csv(rides_by_holiday_and_stats, "rides_by_holiday_and_stats.csv")
+write.csv(summarydata_df, "summarydata.csv")
+write.csv(headdata, "headdata.csv")
+write.csv(user_peak_time, "user_peak_time.csv")
+write.csv(hourly_user_summary, "hourly_user_summary.csv")
+write.csv(rides_by_hour_and_stats, "rides_by_hour_and_stats.csv")
+write.csv(same_station_by_hour, "same_station_by_hour.csv")
+write.csv(user_seasonal, "user_seasonal.csv")
+write.csv(rides_by_season_and_stats, "rides_by_season_and_stats.csv")
+write.csv(same_station_by_season, "same_station_by_season.csv")
+write.csv(user_weekday_weekend, "user_weekday_weekend.csv")
+write.csv(same_station_by_weekday, "same_station_by_weekday.csv")
+write.csv(rides_summary, "rides_summary.csv")
+write.csv(overall_holiday_usage, "overall_holiday_usage.csv")
+write.csv(user_holiday_usage, "user_holiday_usage.csv")
+write.csv(same_station_by_holiday, "same_station_by_holiday.csv")
+write.csv(conversion_rate_by_hour, "conversion_rate_by_hour.csv")
+write.csv(conversion_rate_by_duration, "conversion_rate_by_duration.csv")
+write.csv(conversion_rate_by_weekday, "conversion_rate_by_weekday.csv")
+write.csv(conversion_rate_by_season, "conversion_rate_by_season.csv")
+write.csv(conversion_rate_by_day_type, "conversion_rate_by_day_type.csv")
+write.csv(conversion_rate_by_holiday, "conversion_rate_by_holiday.csv")
+
+print(user_duration_summary,n=Inf)
+print(ride_duration_counts,n=Inf)
+print(ride_duration_stats,n=Inf)
+print(same_station_by_user,n=Inf)
+print(overall_peak_time,n=Inf)
+print(rides_by_season,n=Inf)
+print(overall_weekday_weekend,n=Inf)
+print(rides_by_weekday,n=Inf)
+print(rides_by_holiday_and_stats,n=Inf)
+print(user_peak_time,n=Inf)
+print(rides_by_hour_and_stats,n=Inf)
+print(same_station_by_hour,n=Inf)
+print(user_seasonal,n=Inf)
+print(rides_by_season_and_stats,n=Inf)
+print(same_station_by_season,n=Inf)
+print(user_weekday_weekend,n=Inf)
+print(same_station_by_weekday,n=Inf)
+print(rides_summary,n=Inf)
+print(overall_holiday_usage,n=Inf)
+print(user_holiday_usage,n=Inf)
+print(same_station_by_holiday,n=Inf)
+print(conversion_rate_by_hour,n=Inf)
+print(conversion_rate_by_duration,n=Inf)
+print(conversion_rate_by_weekday,n=Inf)
+print(conversion_rate_by_season,n=Inf)
+print(conversion_rate_by_day_type,n=Inf)
+print(conversion_rate_by_holiday,n=Inf)
